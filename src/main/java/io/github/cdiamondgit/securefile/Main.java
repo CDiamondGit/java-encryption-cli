@@ -1,6 +1,10 @@
 package io.github.cdiamondgit.securefile;
+import java.io.Console;
 import java.nio.file.Path;
 import java.nio.file.Files;
+import java.util.Arrays;
+import java.security.NoSuchAlgorithmException;
+import java.security.spec.InvalidKeySpecException;
 
 public class Main {
     public static void main(String[] args) {
@@ -39,7 +43,32 @@ public class Main {
 
 
         if (args[0].equals("encrypt")) {
+            FileCryptoService fileCryptoService = new FileCryptoService();
+            Console console = System.console();
 
+            if (console == null) {
+                System.out.println("Error: Console could not be accessed");
+                return;
+            }
+
+            char[] password; // a String is immutable, so an array of characters is used to overwrite the password once finished
+            password = console.readPassword("Password: ");
+
+            if (password == null) {
+                System.out.println("Error: Password could not be read");
+                return;
+            }
+
+            try {
+                fileCryptoService.encrypt(path, password);
+            } catch (NoSuchAlgorithmException | InvalidKeySpecException e) {
+                System.out.println("Error: Cryptographic operation failed: " + e);
+            } finally {
+                Arrays.fill(password, '\0'); // whether fileCryptoService runs or not, the password will be wiped from memory
+            }
+            
+
+        
         } else if (args[0].equals("decrypt")) {
 
         }
