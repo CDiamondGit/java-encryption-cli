@@ -5,6 +5,12 @@ import java.nio.file.Files;
 import java.util.Arrays;
 import java.security.NoSuchAlgorithmException;
 import java.security.spec.InvalidKeySpecException;
+import java.security.InvalidKeyException;
+import javax.crypto.NoSuchPaddingException;
+import java.security.InvalidAlgorithmParameterException;
+import java.io.IOException;
+import javax.crypto.IllegalBlockSizeException;
+import javax.crypto.BadPaddingException;
 
 public class Main {
     public static void main(String[] args) {
@@ -61,8 +67,8 @@ public class Main {
 
             try {
                 fileCryptoService.encrypt(path, password);
-            } catch (NoSuchAlgorithmException | InvalidKeySpecException e) {
-                System.out.println("Error: Cryptographic operation failed: " + e);
+            } catch (NoSuchAlgorithmException | InvalidKeySpecException | InvalidKeyException | NoSuchPaddingException | InvalidAlgorithmParameterException | IOException | IllegalBlockSizeException | BadPaddingException e) {
+                System.out.println("Error: Cryptographic operation failed: " + e.getMessage());
             } finally {
                 Arrays.fill(password, '\0'); // whether fileCryptoService runs or not, the password will be wiped from memory
             }
