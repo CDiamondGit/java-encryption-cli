@@ -1,23 +1,19 @@
 package io.github.cdiamondgit.securefile;
 
-import java.nio.file.Path;
-import java.security.SecureRandom;
-import javax.crypto.SecretKey;
-import javax.crypto.spec.PBEKeySpec;
-import javax.crypto.SecretKeyFactory;
-import java.security.NoSuchAlgorithmException;
-import java.security.spec.InvalidKeySpecException;
-import javax.crypto.spec.SecretKeySpec;
-import javax.crypto.Cipher;
-import javax.crypto.spec.GCMParameterSpec;
-import javax.crypto.NoSuchPaddingException;
-import java.security.InvalidKeyException;
-import java.security.InvalidAlgorithmParameterException;
 import java.io.IOException;
-import java.nio.file.Files;
-import javax.crypto.IllegalBlockSizeException;
-import javax.crypto.BadPaddingException;
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.GeneralSecurityException; // covers NoSuchAlgorithmException, InvalidKeyException, InvalidAlgorithmParameterException, InvalidKeySpecException, NoSuchPaddingException, IllegalBlockSizeException, BadPaddingException, AEADBadTagException
+import java.security.SecureRandom;
+import java.util.Arrays;
+
+import javax.crypto.Cipher;
+import javax.crypto.SecretKey;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.SecretKeySpec;
 
 public class FileCryptoService {
     private static final byte[] MAGIC_BYTES = {'S', 'E', 'C', 'F'};
@@ -25,7 +21,7 @@ public class FileCryptoService {
     private static final int SALT_BYTES = 16;
     private static final int NONCE_BYTES = 12;
 
-    public void encrypt(Path path, char[] password) throws NoSuchAlgorithmException, InvalidKeySpecException, NoSuchPaddingException, InvalidKeyException, InvalidAlgorithmParameterException, IOException, IllegalBlockSizeException,BadPaddingException { // throw the exceptions back to main
+    public void encrypt(Path path, char[] password) throws GeneralSecurityException, IOException { // throw the exceptions back to main
         byte[] saltBytes = generateSalt();
         SecretKey AESkey = generateAESKey(saltBytes, password);
         byte[] nonceBytes = generateNonce(); 
@@ -35,7 +31,7 @@ public class FileCryptoService {
         cipher.init(Cipher.ENCRYPT_MODE, AESkey, gcmParameterSpec); 
 
         byte[] fileBytes = Files.readAllBytes(path);
-        byte[] encryptedBytes = cipher.doFinal(fileBytes);
+        byte[] encryptedBytes = cipher.doFinal(fileBytes);  
 
         Path outputPath = path.resolveSibling(path.getFileName().toString() + ".sec"); // this makes a new path leading to beside the old file, with the ".sec" extension
 
@@ -60,7 +56,7 @@ public class FileCryptoService {
         return saltBytes;
     }
 
-    private SecretKey generateAESKey(byte[] saltBytes, char[] password) throws NoSuchAlgorithmException, InvalidKeySpecException { // if the SecretKeyFactory API cant get the algorithm, it is passed back to the method that called it
+    private SecretKey generateAESKey(byte[] saltBytes, char[] password) throws GeneralSecurityException { // if the SecretKeyFactory API cant get the algorithm, it is passed back to the method that called it
         PBEKeySpec pbeKeySpec = new PBEKeySpec(password, saltBytes, 210000, 256); // Password-Based Encryption Key Specification. It is a container that contains info about the key to be generated
 
         try {
@@ -83,8 +79,42 @@ public class FileCryptoService {
 
         return nonceBytes;
     }
+
+    public void decrypt(Path path, char[] password) throws GeneralSecurityException, IOException { // throw the exceptions back to main
+        byte[] readBytes = Files.readAllBytes(path);
+        int minimumSize = MAGIC_BYTES.length + Byte.BYTES + SALT_BYTES + NONCE_BYTES + 16; // 16 as the GCM tag is 16 bytes (128 / 8)
+        if (readBytes.length < minimumSize) {
+            System.out.println("Error: Invalid encrypted file");
+            return;
+        }
+
+        ByteBuffer buffer = ByteBuffer.wrap(readBytes);
+
+        byte[] readMagicBytes = new byte[MAGIC_BYTES.length];
+        byte[] readSaltBytes = new byte[SALT_BYTES];
+        byte[] readNonceBytes = new byte[NONCE_BYTES];
+        byte readVersion;
+
+        buffer.get(readMagicBytes); // store the magic bytes in the array AND move the buffer's position forward by the number of bytes
+        readVersion = buffer.get();
+
+        if (Arrays.equals(MAGIC_BYTES, readMagicBytes) && (VERSION == readVersion)) {
+            buffer.get(readSaltBytes);
+            buffer.get(readNonceBytes);
+            byte[] readFileContentsAndTag = new byte[buffer.remaining()];
+            buffer.get(readFileContentsAndTag);
+
+            SecretKey recreatedAESkey = generateAESKey(readSaltBytes, password); // The same AES key is created from the password and salt bytes
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding"); 
+            GCMParameterSpec gcmParameterSpec = new GCMParameterSpec(128, readNonceBytes); // The 128 bit GCM authentication tag verifies that the ciphertext has not been altered and that the correct key and nonce were used
+            cipher.init(Cipher.DECRYPT_MODE, recreatedAESkey, gcmParameterSpec); 
+
+            byte[] decryptedBytes = cipher.doFinal(readFileContentsAndTag);
+            Path outputPath = path.resolveSibling(path.getFileName().toString() + ".dec");
+            Files.write(outputPath, decryptedBytes);
+        } else {
+            System.out.println("Error: Could not open encrypted file");
+            return;
+        }
+    }
 }
-
-
-
-

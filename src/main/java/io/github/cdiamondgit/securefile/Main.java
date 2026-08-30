@@ -1,16 +1,11 @@
 package io.github.cdiamondgit.securefile;
+
 import java.io.Console;
-import java.nio.file.Path;
-import java.nio.file.Files;
-import java.util.Arrays;
-import java.security.NoSuchAlgorithmException;
-import java.security.spec.InvalidKeySpecException;
-import java.security.InvalidKeyException;
-import javax.crypto.NoSuchPaddingException;
-import java.security.InvalidAlgorithmParameterException;
 import java.io.IOException;
-import javax.crypto.IllegalBlockSizeException;
-import javax.crypto.BadPaddingException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.GeneralSecurityException; // covers NoSuchAlgorithmException, InvalidKeyException, InvalidAlgorithmParameterException, InvalidKeySpecException, NoSuchPaddingException, IllegalBlockSizeException, BadPaddingException, AEADBadTagException
+import java.util.Arrays;
 
 public class Main {
     public static void main(String[] args) {
@@ -67,17 +62,36 @@ public class Main {
 
             try {
                 fileCryptoService.encrypt(path, password);
-            } catch (NoSuchAlgorithmException | InvalidKeySpecException | InvalidKeyException | NoSuchPaddingException | InvalidAlgorithmParameterException | IOException | IllegalBlockSizeException | BadPaddingException e) {
+            } catch (GeneralSecurityException | IOException e) {
                 System.out.println("Error: Cryptographic operation failed: " + e.getMessage());
             } finally {
                 Arrays.fill(password, '\0'); // whether fileCryptoService runs or not, the password will be wiped from memory
             }
-            
 
-        
         } else if (args[0].equals("decrypt")) {
+            FileCryptoService fileCryptoService = new FileCryptoService();
+            Console console = System.console();
 
+            if (console == null) {
+                System.out.println("Error: Console could not be accessed");
+                return;
+            }
+
+            char[] password; // a String is immutable, so an array of characters is used to overwrite the password once finished
+            password = console.readPassword("Password: ");
+
+            if (password == null) {
+                System.out.println("Error: Password could not be read");
+                return;
+            }
+
+            try {
+                fileCryptoService.decrypt(path, password);
+            } catch (GeneralSecurityException | IOException e) {
+                System.out.println("Error: Cryptographic operation failed: " + e.getMessage());
+            } finally {
+                Arrays.fill(password, '\0'); // whether fileCryptoService runs or not, the password will be wiped from memory
+            }
         }
-
     }
 }
