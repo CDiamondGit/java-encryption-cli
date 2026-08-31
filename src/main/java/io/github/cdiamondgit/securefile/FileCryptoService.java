@@ -10,6 +10,7 @@ import java.util.Arrays;
 import java.io.InputStream;
 import java.io.OutputStream;
 
+import javax.crypto.AEADBadTagException;
 import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
@@ -36,8 +37,6 @@ public class FileCryptoService {
         GCMParameterSpec gcmParameterSpec = new GCMParameterSpec(128, nonceBytes); // The 128 bit GCM authentication tag verifies that the ciphertext has not been altered and that the correct key and nonce were used
         cipher.init(Cipher.ENCRYPT_MODE, AESkey, gcmParameterSpec); 
 
-        byte[] encryptFileBuffer = new byte[BUFFER_SIZE];
-
         long originalFileSizeBytes = Files.size(path);
         long encryptedFileSizeBytes = originalFileSizeBytes + MAGIC_BYTES.length + Byte.BYTES + SALT_BYTES + NONCE_BYTES + 16; // 16 is the GCM tag
 
@@ -53,28 +52,8 @@ public class FileCryptoService {
 
             outputStream.write(buffer.array()); // write headers to beginning of encrypted file
 
-            int currentBytesRead;
-            long totalBytesRead = 0;
-            long percentageDone = 0;
-            while ((currentBytesRead = inputStream.read(encryptFileBuffer)) != -1) { // currentBytesRead stores how many bytes were read into the buffer as the end of the file will not fill up the buffer fully (EOF == -1)
-                byte[] encryptedChunk = cipher.update(encryptFileBuffer, 0, currentBytesRead);
-                if (encryptedChunk != null) {
-                    outputStream.write(encryptedChunk);
-                }
-                totalBytesRead += currentBytesRead;
-                percentageDone = (totalBytesRead * 100) / originalFileSizeBytes;
+            processStream(inputStream, outputStream, cipher, originalFileSizeBytes);
 
-                char[] progressBar = new char[20];
-
-                for (int i = 0; i < progressBar.length; i++) {
-                    if (i < percentageDone / 5) {
-                        progressBar[i] = '#';
-                    } else {
-                        progressBar[i] = '-';
-                    }
-                }
-                System.out.print("\r[" + new String(progressBar) + "] " + percentageDone + "%"); // progressBar (char[]) --> progressBar (String)
-            }
             byte[] finalBytes = cipher.doFinal(); // write the authentication tag
             outputStream.write(finalBytes); 
         }
@@ -88,55 +67,73 @@ public class FileCryptoService {
         System.out.println("\nEncryption successful\n");
     }
 
+
     public void decrypt(Path path, char[] password) throws GeneralSecurityException, IOException { // throw the exceptions back to main
-        byte[] readBytes = Files.readAllBytes(path);
-        int minimumSize = MAGIC_BYTES.length + Byte.BYTES + SALT_BYTES + NONCE_BYTES + 16; // 16 as the GCM tag is 16 bytes (128 / 8)
-        if (readBytes.length < minimumSize) {
-            System.out.println("\nError: Invalid encrypted file\n");
-            return;
-        }
+        try (InputStream inputStream = Files.newInputStream(path)) {
 
-        ByteBuffer buffer = ByteBuffer.wrap(readBytes);
+            int totalSizeHeadersAndTag = MAGIC_BYTES.length + Byte.BYTES + SALT_BYTES + NONCE_BYTES + 16; // 16 as the GCM tag is 16 bytes (128 / 8)
 
-        byte[] readMagicBytes = new byte[MAGIC_BYTES.length];
-        byte[] readSaltBytes = new byte[SALT_BYTES];
-        byte[] readNonceBytes = new byte[NONCE_BYTES];
-        byte readVersion;
+            if (Files.size(path) < totalSizeHeadersAndTag) {
+                System.out.println("\nError: Invalid encrypted file\n");
+                return;
+            }
 
-        buffer.get(readMagicBytes); // store the magic bytes in the array AND move the buffer's position forward by the number of bytes
-        readVersion = buffer.get();
+            byte[] readMagicBytes = inputStream.readNBytes(MAGIC_BYTES.length); 
+            byte readVersion = (byte) inputStream.read();
 
-        if (Arrays.equals(MAGIC_BYTES, readMagicBytes) && (VERSION == readVersion)) {
-            buffer.get(readSaltBytes);
-            buffer.get(readNonceBytes);
-            byte[] readFileContentsAndTag = new byte[buffer.remaining()];
-            buffer.get(readFileContentsAndTag);
-
-            SecretKey recreatedAESkey = generateAESKey(readSaltBytes, password); // The same AES key is created from the password and salt bytes
-            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding"); 
-            GCMParameterSpec gcmParameterSpec = new GCMParameterSpec(128, readNonceBytes); // The 128 bit GCM authentication tag verifies that the ciphertext has not been altered and that the correct key and nonce were used
-
-            cipher.init(Cipher.DECRYPT_MODE, recreatedAESkey, gcmParameterSpec); 
-
-            System.out.println("Decrypting...\n");
-
-            byte[] decryptedBytes = cipher.doFinal(readFileContentsAndTag);
             String inputFileName = path.getFileName().toString();
             String outputName = fileNameHandler(inputFileName, path);
+
+            long originalFileSizeBytes = Files.size(path);
+            long decryptedFileSizeBytes = originalFileSizeBytes - MAGIC_BYTES.length - Byte.BYTES - SALT_BYTES - NONCE_BYTES - 16; // 16 is the GCM tag
+
             Path outputPath = path.resolveSibling(outputName);
 
-            Files.write(outputPath, decryptedBytes);
+            if (Arrays.equals(MAGIC_BYTES, readMagicBytes) && (VERSION == readVersion)) {
+                byte[] readSaltBytes = inputStream.readNBytes(SALT_BYTES);
+                byte[] readNonceBytes = inputStream.readNBytes(NONCE_BYTES);
 
-            String originalFileSize = formatFileSize(Files.size(path));
-            String newFileSize = formatFileSize(Files.size(outputPath));
+                SecretKey recreatedAESkey = generateAESKey(readSaltBytes, password); // The same AES key is created from the password and salt bytes
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                GCMParameterSpec gcmParameterSpec = new GCMParameterSpec(128, readNonceBytes); // The 128 bit GCM authentication tag verifies that the ciphertext has not been altered and that the correct key and nonce were used
 
-            System.out.println("Input: " + path.getFileName().toString() + " (" + originalFileSize + ")");
-            System.out.println("Output: " + outputPath.getFileName().toString() + " (" + newFileSize + ")");
+                cipher.init(Cipher.DECRYPT_MODE, recreatedAESkey, gcmParameterSpec);
 
-            System.out.println("\nDecryption successful\n");
-        } else {
-            System.out.println("\nError: Could not open encrypted file\n");
-            return;
+                System.out.println("Decrypting...\n");
+
+                Path tempPath = Files.createTempFile(outputPath.toAbsolutePath().getParent(),"securefile-",".tmp"); // temporary file to write to until the tag is verified at the end of the file
+
+                
+                try {
+                    try (OutputStream outputStream = Files.newOutputStream(tempPath)) {
+
+                        processStream(inputStream, outputStream, cipher, originalFileSizeBytes - totalSizeHeadersAndTag + 16);
+
+                        try {
+                            byte[] finalBytes = cipher.doFinal(); // verifies the authentication tag
+                            outputStream.write(finalBytes); //authentication succeeded
+                        } catch (AEADBadTagException e) { // authentication failed
+                            return; // authentication failed
+                        }
+                    }
+
+                    Files.move(tempPath, outputPath); // move the temporary file to the final output path
+                    
+                } finally {
+                    Files.deleteIfExists(tempPath); // Remove the temporary file if it still exists
+                }
+
+                String formattedOriginalFileSizeBytes = formatFileSize(originalFileSizeBytes);
+                String formattedDecryptedFileSizeBytes = formatFileSize(decryptedFileSizeBytes);
+
+                System.out.println("\n\nInput: " + path.getFileName().toString() + " (" + formattedOriginalFileSizeBytes + ")");
+                System.out.println("Output: " + outputPath.getFileName().toString() + " (" + formattedDecryptedFileSizeBytes + ")");
+
+                System.out.println("\nDecryption successful\n");
+            } else {
+                System.out.println("\nError: Could not open encrypted file\n");
+                return;
+            }
         }
     }
 
@@ -148,6 +145,7 @@ public class FileCryptoService {
 
         return saltBytes;
     }
+
 
     private SecretKey generateAESKey(byte[] saltBytes, char[] password) throws GeneralSecurityException { // if the SecretKeyFactory API cant get the algorithm, it is passed back to the method that called it
         PBEKeySpec pbeKeySpec = new PBEKeySpec(password, saltBytes, 600000, 256); // Password-Based Encryption Key Specification. It is a container that contains info about the key to be generated
@@ -164,6 +162,7 @@ public class FileCryptoService {
         }
     }
 
+
     private byte[] generateNonce() { // The nonce gives a unique starting value for each encryption so the same key does not reuse the same encryption stream
         SecureRandom secureRandom = new SecureRandom();
         byte[] nonceBytes = new byte[NONCE_BYTES]; 
@@ -172,6 +171,7 @@ public class FileCryptoService {
 
         return nonceBytes;
     }
+
 
     private static String formatFileSize(long bytes) {
         if (bytes >= 1000 * 1000 * 1000) {
@@ -217,5 +217,33 @@ public class FileCryptoService {
             }
         }
         return outputName;
+    }
+
+
+    private void processStream(InputStream inputStream, OutputStream outputStream, Cipher cipher, long originalFileSizeBytes) throws GeneralSecurityException, IOException {
+        byte[] fileBuffer = new byte[BUFFER_SIZE];
+        int currentBytesRead;
+        long totalBytesRead = 0;
+        long percentageDone = 0;
+
+        while ((currentBytesRead = inputStream.read(fileBuffer)) != -1) { // currentBytesRead stores how many bytes were read into the buffer as the end of the file will not fill up the buffer fully (EOF == -1)
+            byte[] proccessingChunk = cipher.update(fileBuffer, 0, currentBytesRead);
+            if (proccessingChunk != null) {
+                outputStream.write(proccessingChunk);
+            }
+            totalBytesRead += currentBytesRead;
+            percentageDone = (totalBytesRead * 100) / originalFileSizeBytes;
+
+            char[] progressBar = new char[20];
+
+            for (int i = 0; i < progressBar.length; i++) {
+                if (i < percentageDone / 5) {
+                    progressBar[i] = '#';
+                } else {
+                    progressBar[i] = '-';
+                }
+            }
+            System.out.print("\r[" + new String(progressBar) + "] " + percentageDone + "%"); // progressBar (char[]) --> progressBar (String)
+        }
     }
 }
