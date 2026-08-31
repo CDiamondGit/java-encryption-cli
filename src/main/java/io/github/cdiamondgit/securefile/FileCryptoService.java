@@ -7,6 +7,8 @@ import java.nio.file.Path;
 import java.security.GeneralSecurityException; // covers NoSuchAlgorithmException, InvalidKeyException, InvalidAlgorithmParameterException, InvalidKeySpecException, NoSuchPaddingException, IllegalBlockSizeException, BadPaddingException, AEADBadTagException
 import java.security.SecureRandom;
 import java.util.Arrays;
+import java.io.InputStream;
+import java.io.OutputStream;
 
 import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
@@ -20,6 +22,7 @@ public class FileCryptoService {
     private static final byte VERSION = 1;
     private static final int SALT_BYTES = 16;
     private static final int NONCE_BYTES = 12;
+    private static final int BUFFER_SIZE = 8192;
 
     public void encrypt(Path path, char[] password) throws GeneralSecurityException, IOException { // throw the exceptions back to main
 
@@ -33,27 +36,54 @@ public class FileCryptoService {
         GCMParameterSpec gcmParameterSpec = new GCMParameterSpec(128, nonceBytes); // The 128 bit GCM authentication tag verifies that the ciphertext has not been altered and that the correct key and nonce were used
         cipher.init(Cipher.ENCRYPT_MODE, AESkey, gcmParameterSpec); 
 
-        byte[] fileBytes = Files.readAllBytes(path);
-        byte[] encryptedBytes = cipher.doFinal(fileBytes);  
+        byte[] encryptFileBuffer = new byte[BUFFER_SIZE];
+
+        long originalFileSizeBytes = Files.size(path);
+        long encryptedFileSizeBytes = originalFileSizeBytes + MAGIC_BYTES.length + Byte.BYTES + SALT_BYTES + NONCE_BYTES + 16; // 16 is the GCM tag
 
         Path outputPath = path.resolveSibling(path.getFileName().toString() + ".sec"); // this makes a new path leading to beside the old file, with the ".sec" extension
 
-        int totalSize = MAGIC_BYTES.length + Byte.BYTES + SALT_BYTES + NONCE_BYTES + encryptedBytes.length;
+        try (InputStream inputStream = Files.newInputStream(path); OutputStream outputStream = Files.newOutputStream(outputPath)) { // make an input and output stream for each file (the try loop will close them afterwards)
+            int totalSizeHeaders = MAGIC_BYTES.length + Byte.BYTES + SALT_BYTES + NONCE_BYTES;
+            ByteBuffer buffer = ByteBuffer.allocate(totalSizeHeaders);
+            buffer.put(MAGIC_BYTES);
+            buffer.put(VERSION);
+            buffer.put(saltBytes);
+            buffer.put(nonceBytes);
 
-        ByteBuffer buffer = ByteBuffer.allocate(totalSize);
-        buffer.put(MAGIC_BYTES);
-        buffer.put(VERSION);
-        buffer.put(saltBytes);
-        buffer.put(nonceBytes);
-        buffer.put(encryptedBytes);
+            outputStream.write(buffer.array()); // write headers to beginning of encrypted file
 
-        Files.write(outputPath, buffer.array());
+            int currentBytesRead;
+            long totalBytesRead = 0;
+            long percentageDone = 0;
+            while ((currentBytesRead = inputStream.read(encryptFileBuffer)) != -1) { // currentBytesRead stores how many bytes were read into the buffer as the end of the file will not fill up the buffer fully (EOF == -1)
+                byte[] encryptedChunk = cipher.update(encryptFileBuffer, 0, currentBytesRead);
+                if (encryptedChunk != null) {
+                    outputStream.write(encryptedChunk);
+                }
+                totalBytesRead += currentBytesRead;
+                percentageDone = (totalBytesRead * 100) / originalFileSizeBytes;
 
-        String originalFileSize = formatFileSize(Files.size(path));
-        String newFileSize = formatFileSize(Files.size(outputPath));
+                char[] progressBar = new char[20];
 
-        System.out.println("Input: " + path.getFileName().toString() + " (" + originalFileSize + ")");
-        System.out.println("Output: " + outputPath.getFileName().toString() + " (" + newFileSize + ")");
+                for (int i = 0; i < progressBar.length; i++) {
+                    if (i < percentageDone / 5) {
+                        progressBar[i] = '#';
+                    } else {
+                        progressBar[i] = '-';
+                    }
+                }
+                System.out.print("\r[" + new String(progressBar) + "] " + percentageDone + "%"); // progressBar (char[]) --> progressBar (String)
+            }
+            byte[] finalBytes = cipher.doFinal(); // write the authentication tag
+            outputStream.write(finalBytes); 
+        }
+
+        String formattedOriginalFileSizeBytes = formatFileSize(originalFileSizeBytes);
+        String formattedEncrypedFileSizeBytes = formatFileSize(encryptedFileSizeBytes);
+
+        System.out.println("\n\nInput: " + path.getFileName().toString() + " (" + formattedOriginalFileSizeBytes + ")");
+        System.out.println("Output: " + outputPath.getFileName().toString() + " (" + formattedEncrypedFileSizeBytes + ")");
 
         System.out.println("\nEncryption successful\n");
     }
